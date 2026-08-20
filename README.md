@@ -1,6 +1,6 @@
 # Reliable work-order webhook delivery
 
-Infrai gives you one API and a single`INFRAI_API_KEY`for the delivery queue, billing every capability under one key. This repo keeps the business boundary in a small TypeScript service: acknowledge a queued event only after the field-service destination accepts it. An unaccepted delivery stays available past the visibility window, so retry becomes an explicit state transition instead of a hopeful loop in the request handler.
+Infrai gives you one API and a single`INFRAI_API_KEY`for the queue, so the retry state lives outside your request handler. The core idea: acknowledge a queued event only after the field-service destination accepts it. An unaccepted delivery stays available past the visibility window, which makes retry an explicit state transition instead of a hopeful loop in the handler. This repo keeps that boundary in a small TypeScript service.
 
 ## Run the path
 
@@ -13,7 +13,7 @@ export FIELD_SERVICE_WEBHOOK_URL=https://field-service.example/webhooks/work-ord
 npm run dev
 ```
 
-In another terminal, submit a validated dispatch update and run one worker pass:
+In another shell, submit a validated dispatch update and run one worker pass:
 
 ```bash
 curl -X POST http://localhost:3000/work-order-events \
@@ -22,19 +22,17 @@ curl -X POST http://localhost:3000/work-order-events \
 npm run worker
 ```
 
-The intake response is concrete:`{"delivery_id":"<uuid>","state":"queued"}`. The same request boundary also accepts`photo_added`with`photo_id`and`captured_at`, or`technician_follow_up_requested`with`technician_id`and`due_at`; Zod rejects bodies that don't match one of those three domain events.
+The intake response is concrete:`{"delivery_id":"<uuid>","state":"queued"}`. The same request boundary also accepts`photo_added`with`photo_id`and`captured_at`, or`technician_follow_up_requested`with`technician_id`and`due_at`; Zod rejects bodies that aren't one of those three domain events.
 
 ## Why the acknowledgement comes last
 
-Publishing and delivery are different problems. The HTTP service validates a work-order event, assigns a stable delivery id, and calls`infrai.queue.publish`. The worker later calls`infrai.queue.consume(10, 60)`, sends the event with that id as the destination idempotency key, and calls`infrai.queue.ack`only on an accepted response. Splitting it this way gives the caller a quick`queued`and leaves delivery ownership with the queue.
+Publishing and delivery are different problems. The HTTP service validates a work-order event, assigns a stable delivery id, and calls`infrai.queue.publish`. The worker later calls`infrai.queue.consume(10, 60)`, sends the event with that id as the destination idempotency key, and calls`infrai.queue.ack`only on accepted response. Versus retrying inside intake, this split returns a quick`queued`to the caller and leaves delivery ownership with the queue.
 
-The one real gotcha: retries inside the intake request hide delivery failures behind latency. Push that out to the worker.
-
-Rate limiting on the queue API uses bounded exponential backoff and honors`Retry-After`. Every publish and ack carries an idempotency key, so repeating a write preserves the single logical action.
+One real gotcha: queue API rate limiting uses bounded exponential backoff and honors`Retry-After`. Every publish and ack carries an idempotency key, so a repeated write stays one logical action.
 
 ## Verify the business decision
 
-The focused test feeds`deliverMessage`a`dispatch_status_changed`event. A rejected destination must produce`retry_pending`with no acknowledgement; an accepted destination must produce`acknowledged`and record exactly the consumed`message_id`.
+The focused test feeds`deliverMessage`a`dispatch_status_changed`event. Rejected destination must yield`retry_pending`with no ack; accepted destination must yield`acknowledged`and record exactly the consumed`message_id`.
 
 ```bash
 npm test
@@ -49,7 +47,7 @@ MIT
 
 ## Production notes: Field Service Webhook Retry Queue
 
-The code stays simple on purpose. Here's what to set before going live. The details below apply to Field Service Webhook Retry Queue.
+The code stays simple on purpose. Here's what to set before going live. Details below apply to Field Service Webhook Retry Queue.
 
 **Account & key**
 
